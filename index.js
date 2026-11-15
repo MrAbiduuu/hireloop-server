@@ -124,6 +124,14 @@ app.get("/applications", async (req, res) => {
     .toArray();
   res.send(result);
 });
+app.get("/applications/count", async (req, res) => {
+  const query = {};
+  if (req.query.userId) query.userId = req.query.userId;
+  if (req.query.jobId) query.jobId = req.query.jobId;
+
+  const result = await applications.countDocuments(query);
+  res.send({ count: result });
+});
 
 // Remove an application (seeker withdrawing their application)
 app.delete("/applications/:id", async (req, res) => {
@@ -156,7 +164,9 @@ app.post("/applications", async (req, res) => {
     userId: application.userId,
   });
   if (existing) {
-    return res.status(409).send({ message: "You have already applied to this job" });
+    return res
+      .status(409)
+      .send({ message: "You have already applied to this job" });
   }
 
   // Mongo creates the "applications" collection automatically on first insert
