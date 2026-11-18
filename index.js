@@ -2,6 +2,9 @@ import express, { response } from "express";
 import cors from "cors";
 import "dotenv/config";
 import { MongoClient, ObjectId } from "mongodb";
+import Stripe from "stripe";
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const client = new MongoClient(process.env.MONGO_DB_URI);
 
@@ -20,6 +23,7 @@ const database = connectedClient.db("hireloopdb");
 const users = database.collection("user");
 const jobs = database.collection("jobs");
 const applications = database.collection("applications");
+const payments = database.collection("payments");
 
 const app = express();
 const port = process.env.PORT || 8000;
@@ -34,6 +38,22 @@ app.get("/users", async (req, res) => {
   const cursor = users.find({});
   const result = await cursor.toArray();
   res.send(result);
+});
+
+app.get("/users/:id/premium", async (req, res) => {
+  const id = req.params.id;
+  if (!ObjectId.isValid(id)) {
+    return res.status(400).send({ premium: false });
+  }
+  const query = { _id: new ObjectId(id) };
+  // `permium` is the legacy field name written before the typo was fixed,
+  // so keep reading it to avoid downgrading users who already paid.
+  const result = await users.findOne(query, {
+    projection: { premium: 1, permium: 1 },
+  });
+  // Always return a proper JSON body — res.send(null) produced an empty
+  // response that made the client's response.json() throw.
+  res.send({ premium: Boolean(result?.premium || result?.permium) });
 });
 
 // JOBS RELATED API
@@ -183,6 +203,47 @@ app.delete("/jobs/:id", async (req, res) => {
   const id = req.params.id;
   const result = await jobs.deleteOne({ _id: new ObjectId(id) });
   res.send(result);
+});
+
+// payments related api
+app.post("/payments/checkout-verify", async (req, res) => {
+  const { sessionId } = req.body;
+
+  if (!sessionId) {
+    return res.send({ success: false, message: "Session Id is required" });
+  }
+
+  const { status, payment_status, customer_email, metadata, payment_intent } =
+    await stripe.checkout.sessions.retrieve(sessionId);
+  if (status === "complete" && payment_status === "paid") {
+    const sessionQuery = { sessionId };
+    const esixtingPayment = await payments.findOne(sessionQuery);
+    if (esixtingPayment) {
+      return res.send({ success: false, message: "Payment already verified" });
+    }
+
+    const payment = {
+      sessionId,
+      status,
+      payment_status,
+      customer_email,
+      useId: metadata.userId,
+      payment_date: new Date(),
+      payment_intent,
+    };
+    const result = await payments.insertOne(payment);
+
+    const query = { _id: new ObjectId(metadata.userId) };
+
+    const updatedDoc = {
+      $set: {
+        premium: true,
+      },
+    };
+    const updatedResult = await users.updateOne(query, updatedDoc);
+    return res.send({ success: true, result, updatedResult });
+  }
+  res.send({ success: false, message: "Payment Verification Failed" });
 });
 
 app.listen(port, () => {
