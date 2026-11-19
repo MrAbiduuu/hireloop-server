@@ -60,6 +60,10 @@ app.get("/users/:id/premium", async (req, res) => {
 app.get("/jobs", async (req, res) => {
   const query = {};
   if (req.query) {
+    // Recruiters only manage their own listings — GET /jobs?recruiterId=<id>
+    if (req.query.recruiterId) {
+      query.recruiterId = req.query.recruiterId;
+    }
     if (req.query.jobType) {
       query.jobType = req.query.jobType;
     }
@@ -134,6 +138,7 @@ app.get("/applications/check", async (req, res) => {
 // List applications, optionally filtered by ?userId= and/or ?jobId=
 app.get("/applications", async (req, res) => {
   const query = {};
+  if (req.query.applicantId) query.userId = req.query.applicantId;
   if (req.query.userId) query.userId = req.query.userId;
   if (req.query.jobId) query.jobId = req.query.jobId;
 
@@ -199,8 +204,78 @@ app.post("/applications", async (req, res) => {
   res.status(201).send(result);
 });
 
+// Statuses a recruiter can move an application through in the hiring pipeline.
+const APPLICATION_STATUSES = [
+  "pending",
+  "review",
+  "shortlisted",
+  "interview",
+  "offered",
+  "rejected",
+  "withdrawn",
+];
+
+// Let a recruiter review an applicant and update their status. Ownership is
+// verified through the job the application belongs to (applications do not
+// store a recruiterId of their own).
+app.patch("/applications/:id/status", async (req, res) => {
+  const { id } = req.params;
+  const { status, recruiterId } = req.body ?? {};
+
+  if (!ObjectId.isValid(id)) {
+    return res.status(400).send({ message: "Invalid application id" });
+  }
+  if (!APPLICATION_STATUSES.includes(status)) {
+    return res.status(400).send({ message: "Invalid application status" });
+  }
+  if (!recruiterId) {
+    return res.status(400).send({ message: "recruiterId is required" });
+  }
+
+  const application = await applications.findOne({ _id: new ObjectId(id) });
+  if (!application) {
+    return res.status(404).send({ message: "Application not found" });
+  }
+
+  const job = ObjectId.isValid(application.jobId)
+    ? await jobs.findOne({ _id: new ObjectId(application.jobId) })
+    : null;
+  if (!job || job.recruiterId !== recruiterId) {
+    return res
+      .status(403)
+      .send({ message: "You can only review applications for your own jobs" });
+  }
+
+  await applications.updateOne(
+    { _id: new ObjectId(id) },
+    { $set: { status, updatedAt: new Date() } }
+  );
+
+  res.send({ message: "Application status updated", status });
+});
+
 app.delete("/jobs/:id", async (req, res) => {
-  const id = req.params.id;
+  const { id } = req.params;
+  const { recruiterId } = req.query;
+
+  if (!ObjectId.isValid(id)) {
+    return res.status(400).send({ message: "Invalid job id" });
+  }
+  if (!recruiterId) {
+    return res.status(400).send({ message: "recruiterId is required" });
+  }
+
+  const job = await jobs.findOne({ _id: new ObjectId(id) });
+
+  if (!job) {
+    return res.status(404).send({ message: "Job not found" });
+  }
+  if (job.recruiterId !== recruiterId) {
+    return res
+      .status(403)
+      .send({ message: "You can only delete your own job posts" });
+  }
+
   const result = await jobs.deleteOne({ _id: new ObjectId(id) });
   res.send(result);
 });
